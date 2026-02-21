@@ -5,8 +5,10 @@ Envía correos electrónicos a través de Amazon SES con template
 HTML corporativo. Destinatario y asunto fijos por variables de entorno.
 
 Variables de entorno requeridas:
-    - SENDER_EMAIL : Dirección verificada en SES (remitente).
-    - TO_EMAIL     : Dirección destino de los mensajes de contacto.
+    - SENDER_EMAIL : Remitente verificado en SES.
+                     Soporta formato con nombre: "neamsoft <no-reply@neamsoft.com.mx>"
+    - TO_EMAIL     : Destinatario(s). Soporta múltiples correos separados por coma:
+                     "admin@neamsoft.com.mx, soporte@neamsoft.com.mx"
     - SUBJECT      : Asunto fijo para los correos.
     - REGION       : Región de AWS para SES (default: us-east-1).
 
@@ -54,6 +56,11 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+def _parse_recipients(raw: str) -> list[str]:
+    """Parsea TO_EMAIL en lista de correos (soporta comas)."""
+    return [email.strip() for email in raw.split(",") if email.strip()]
+
+
 def _build_response(status_code: int, body: dict) -> dict:
     """Construye la respuesta estándar de API Gateway / Lambda."""
     return {
@@ -109,7 +116,12 @@ def lambda_handler(event: dict, context) -> dict:
             "error": "Se requiere el campo 'message'."
         })
 
-    logger.info("Enviando correo a: %s", TO_EMAIL)
+    recipients = _parse_recipients(TO_EMAIL)
+    if not recipients:
+        logger.error("TO_EMAIL vacío o no configurado.")
+        return _build_response(500, {"error": "Destinatario no configurado."})
+
+    logger.info("Enviando correo de: %s → a: %s", SENDER_EMAIL, recipients)
 
     # --- 3. Construir correo multi-part --------------------------------------
     html_body = HTML_TEMPLATE.format(message_content=message)
@@ -119,7 +131,7 @@ def lambda_handler(event: dict, context) -> dict:
     try:
         response = ses.send_email(
             Source=SENDER_EMAIL,
-            Destination={"ToAddresses": [TO_EMAIL]},
+            Destination={"ToAddresses": recipients},
             Message={
                 "Subject": {
                     "Data": SUBJECT,
@@ -150,10 +162,10 @@ def lambda_handler(event: dict, context) -> dict:
         error_code = exc.response["Error"]["Code"]
         error_msg = exc.response["Error"]["Message"]
         logger.error(
-            "Error de SES [%s]: %s — Destinatario: %s",
+            "Error de SES [%s]: %s — Destinatarios: %s",
             error_code,
             error_msg,
-            TO_EMAIL,
+            recipients,
         )
         return _build_response(500, {
             "error": f"Error al enviar correo: {error_msg}",
