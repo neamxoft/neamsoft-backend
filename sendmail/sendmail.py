@@ -24,6 +24,7 @@ import json
 import logging
 import os
 import re
+from datetime import datetime
 
 import boto3
 from botocore.exceptions import ClientError
@@ -150,9 +151,12 @@ def lambda_handler(event: dict, context) -> dict:
 
     logger.info("Enviando correo de: %s → a: %s", SENDER_EMAIL, recipients)
 
-    # --- 4. Construir correo multi-part --------------------------------------
+    # --- 4. Construir correo multi-part y Asunto -----------------------------
     html_body = HTML_TEMPLATE.format(message_content=message)
     text_body = _strip_html(message)
+
+    current_time = datetime.now().strftime("%d-%m-%Y %H:%M:%S")
+    formatted_subject = SUBJECT.replace("[]", f"[{current_time}]")
 
     # --- 5. Enviar vía SES ---------------------------------------------------
     try:
@@ -161,7 +165,7 @@ def lambda_handler(event: dict, context) -> dict:
             Destination={"ToAddresses": recipients},
             Message={
                 "Subject": {
-                    "Data": SUBJECT,
+                    "Data": formatted_subject,
                     "Charset": "UTF-8",
                 },
                 "Body": {
