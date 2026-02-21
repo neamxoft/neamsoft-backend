@@ -10,6 +10,8 @@ Variables de entorno requeridas:
     - TO_EMAIL     : Destinatario(s). Soporta múltiples correos separados por coma:
                      "admin@neamsoft.com.mx, soporte@neamsoft.com.mx"
     - SUBJECT      : Asunto fijo para los correos.
+    - REFERER      : Orígenes permitidos separados por coma (validación de seguridad):
+                     "http://localhost,neamsoft.com.mx"
     - REGION       : Región de AWS para SES (default: us-east-1).
 
 Evento esperado (JSON):
@@ -36,6 +38,7 @@ REGION = os.environ.get("REGION", "us-east-1")
 SENDER_EMAIL = os.environ.get("SENDER_EMAIL", "")
 TO_EMAIL = os.environ.get("TO_EMAIL", "")
 SUBJECT = os.environ.get("SUBJECT", "Nuevo mensaje de contacto — neamsoft")
+REFERER = os.environ.get("REFERER", "")
 
 ses = boto3.client("ses", region_name=REGION)
 
@@ -59,6 +62,22 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 def _parse_recipients(raw: str) -> list[str]:
     """Parsea TO_EMAIL en lista de correos (soporta comas)."""
     return [email.strip() for email in raw.split(",") if email.strip()]
+
+
+def _validate_referer(event: dict) -> bool:
+    """Valida que el Referer/Origin del request esté en la whitelist."""
+    if not REFERER:
+        return True  # Si no hay REFERER configurado, permite todo
+
+    allowed = [r.strip().lower() for r in REFERER.split(",") if r.strip()]
+    headers = event.get("headers", {}) or {}
+
+    # Normalizar headers a lowercase keys
+    lower_headers = {k.lower(): v for k, v in headers.items()}
+    referer = lower_headers.get("referer", "") or lower_headers.get("origin", "")
+    referer = referer.lower()
+
+    return any(origin in referer for origin in allowed)
 
 
 def _build_response(status_code: int, body: dict) -> dict:
@@ -89,13 +108,21 @@ def lambda_handler(event: dict, context) -> dict:
     Punto de entrada de la Lambda.
 
     Flujo:
-        1. Parsea el evento (body de API Gateway o invocación directa).
-        2. Valida que el campo 'message' esté presente.
-        3. Construye el correo multi-part (HTML + texto plano).
-        4. Envía vía SES y registra el resultado en CloudWatch.
+        1. Valida el Referer/Origin del request.
+        2. Parsea el evento (body de API Gateway o invocación directa).
+        3. Valida que el campo 'message' esté presente.
+        4. Construye el correo multi-part (HTML + texto plano).
+        5. Envía vía SES y registra el resultado en CloudWatch.
     """
 
-    # --- 1. Parsear evento ---------------------------------------------------
+    # --- 1. Validar Referer --------------------------------------------------
+    if not _validate_referer(event):
+        logger.warning("Referer rechazado: %s", event.get("headers", {}))
+        return _build_response(401, {
+            "error": "No autorizado."
+        })
+
+    # --- 2. Parsear evento ---------------------------------------------------
     try:
         if isinstance(event.get("body"), str):
             body = json.loads(event["body"])
@@ -109,7 +136,7 @@ def lambda_handler(event: dict, context) -> dict:
 
     message = (body.get("message") or "").strip()
 
-    # --- 2. Validar campo requerido ------------------------------------------
+    # --- 3. Validar campo requerido ------------------------------------------
     if not message:
         logger.warning("Campo 'message' vacío o ausente.")
         return _build_response(400, {
@@ -123,11 +150,11 @@ def lambda_handler(event: dict, context) -> dict:
 
     logger.info("Enviando correo de: %s → a: %s", SENDER_EMAIL, recipients)
 
-    # --- 3. Construir correo multi-part --------------------------------------
+    # --- 4. Construir correo multi-part --------------------------------------
     html_body = HTML_TEMPLATE.format(message_content=message)
     text_body = _strip_html(message)
 
-    # --- 4. Enviar vía SES ---------------------------------------------------
+    # --- 5. Enviar vía SES ---------------------------------------------------
     try:
         response = ses.send_email(
             Source=SENDER_EMAIL,
